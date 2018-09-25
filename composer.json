@@ -1,10 +1,10 @@
 {
-    "name": "textalk/websocket",
+    "name": "Trip69/websocket-php",
     "description": "WebSocket client and server",
     "license": "MIT",
     "authors": [
         {
-            "name": "Fredrik Liljegren",
+            "name": "Fredrik Liljegren, async by Trip",
             "email": "fredrik.liljegren@textalk.se"
         }
     ],

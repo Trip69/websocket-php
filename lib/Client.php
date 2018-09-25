@@ -1,43 +1,33 @@
 <?php
 
-/**
- * Copyright (C) 2014, 2015 Textalk
- * Copyright (C) 2015 Ignas Bernotas - added context options and handling
- *
- * This file is part of Websocket PHP and is free software under the ISC License.
- * License text: https://raw.githubusercontent.com/Textalk/websocket-php/master/COPYING
- */
-
 namespace WebSocket;
 
 class Client extends Base {
   protected $socket_uri;
 
-  /**
-   * @param string  $uri      A ws/wss-URI
-   * @param array   $options
-   *   Associative array containing:
-   *   - context:      Set the stream context. Default: empty context
-   *   - timeout:      Set the socket timeout in seconds.  Default: 5
-   *   - headers:      Associative array of headers to set/override.
-   */
-  public function __construct($uri, $options = array()) {
-    $this->options = $options;
-
-    if (!array_key_exists('timeout', $this->options)) $this->options['timeout'] = 5;
-
-    // the fragment size
-    if (!array_key_exists('fragment_size', $this->options)) $this->options['fragment_size'] = 4096;
-
-    $this->socket_uri = $uri;
-  }
-
-  public function __destruct() {
-    if ($this->socket) {
-      if (get_resource_type($this->socket) === 'stream') fclose($this->socket);
-      $this->socket = null;
+    /**
+    * @param string  $uri      A ws/wss-URI
+    * @param array   $options
+    *   Associative array containing:
+    *   - timeout:      Set the socket timeout in seconds.  Default: 5
+    *   - headers:      Associative array of headers to set/override.
+    */
+    public function __construct($uri, $options = array())
+    {
+        $this->options = $options;
+        if (!array_key_exists('timeout', $this->options)) $this->options['timeout'] = 10;
+        if (!array_key_exists('blocking', $this->options)) $this->options['blocking'] = false;
+        $this->socket_uri = $uri;
     }
-  }
+
+    public function __destruct()
+    {
+        if ($this->socket)
+        {
+            if (get_resource_type($this->socket) === 'stream') fclose($this->socket);
+            $this->socket = null;
+        }
+    }
 
   /**
    * Perform WebSocket handshake
@@ -65,31 +55,9 @@ class Client extends Base {
 
     $host_uri = ($scheme === 'wss' ? 'ssl' : 'tcp') . '://' . $host;
 
-    // Set the stream context options if they're already set in the config
-    if (isset($this->options['context'])) {
-      // Suppress the error since we'll catch it below
-      if (@get_resource_type($this->options['context']) === 'stream-context') {
-        $context = $this->options['context'];
-      }
-      else {
-        throw new \InvalidArgumentException(
-          "Stream context in \$options['context'] isn't a valid context"
-        );
-      }
-    }
-    else {
-      $context = stream_context_create();
-    }
-
     // Open the socket.  @ is there to supress warning that we will catch in check below instead.
-    $this->socket = @stream_socket_client(
-      $host_uri . ':' . $port,
-      $errno,
-      $errstr,
-      $this->options['timeout'],
-      STREAM_CLIENT_CONNECT,
-      $context
-    );
+    $this->socket = @fsockopen($host_uri, $port, $errno, $errstr, $this->options['timeout']);
+
 
     if ($this->socket === false) {
       throw new ConnectionException(
@@ -106,7 +74,7 @@ class Client extends Base {
     // Default headers (using lowercase for simpler array_merge below).
     $headers = array(
       'host'                  => $host . ":" . $port,
-      'user-agent'            => 'websocket-client-php',
+      'user-agent'            => 'trips_bitbot',
       'connection'            => 'Upgrade',
       'upgrade'               => 'websocket',
       'sec-websocket-key'     => $key,
@@ -138,8 +106,13 @@ class Client extends Base {
     // Send headers.
     $this->write($header);
 
-    // Get server response header (terminated with double CR+LF).
-    $response = stream_get_line($this->socket, 1024, "\r\n\r\n");
+    // Get server response.
+    $response = '';
+    do {
+      $buffer = stream_get_line($this->socket, 1024, "\r\n");
+      $response .= $buffer . "\n";
+      $metadata = stream_get_meta_data($this->socket);
+    } while (!feof($this->socket) && $metadata['unread_bytes'] > 0);
 
     /// @todo Handle version switching
 
@@ -160,7 +133,10 @@ class Client extends Base {
       throw new ConnectionException('Server sent bad upgrade response.');
     }
 
+    //trip edit
+    stream_set_blocking ($this->socket, $this->options['blocking']);
     $this->is_connected = true;
+
   }
 
   /**
