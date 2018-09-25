@@ -24,6 +24,7 @@ Installing
 Preferred way to install is with [Composer](https://getcomposer.org/).
 
 Just add
+```php
     "repositories": [
         {
             "type": "vcs",
@@ -33,7 +34,7 @@ Just add
     "require": {
       "textalk/websocket": "dev-master"
     }
-
+```
 in your projects composer.json.
 
 Client usage:
