@@ -35,6 +35,8 @@ class Base {
     {
         $this->options['blocking'] = $blocking;
         if ($this->socket && get_resource_type($this->socket) === 'stream')
+            stream_set_blocking ($this->socket, $this->options['blocking']);
+
 
     }
 
@@ -105,94 +107,116 @@ class Base {
         $this->write($frame);
     }
 
-  public function receive() {
-    if (!$this->is_connected) $this->connect(); /// @todo This is a client function, fixme!
-
-    //Trip edit
-    if($this->options['blocking'] == false && feof($this->socket))
+    public function receive()
     {
-        //no more data
-        if($this->last_data_time < (time() + $this->options['timeout']))
+        if (!$this->is_connected)
+            $this->connect(); /// @todo This is a client function, fixme!
+
+        //if not blocking and end of stream
+        if($this->options['blocking'] == false && feof($this->socket))
         {
-            $metadata = stream_get_meta_data($this->socket);
-            throw new ConnectionException(
+            //timeout test
+            if($this->last_data_time < (time() + $this->options['timeout']))
+            {
+                $metadata = stream_get_meta_data($this->socket);
+                throw new ConnectionException(
                 'Empty read; connection dead?  Stream state: ' . json_encode($metadata)
-            );
+                );
+            }
+            return null;
         }
-        return null;
+
+        // Just read the main fragment information first.
+        $data = $this->read(2);
+        //discard eols
+        while($data==PHP_EOL)
+        {
+            $data = $this->read(2);
+            echo 'position:'.ftell($this->socket)."\r\n";
+        }
+
+        //a non blocking stream always returns 2 blank chars before feof is set to true
+        if ($data==null)
+        {
+            if($this->options['blocking'])
+            {
+                $metadata = stream_get_meta_data($this->socket);
+                throw new ConnectionException(
+                    'Empty read; connection dead?  Stream state: ' . json_encode($metadata)
+                );
+            }
+            else
+                return null;
+        }
+
+        $this->last_data_time=time();
+        // Is this the final fragment?  // Bit 0 in byte 0
+        /// @todo Handle huge payloads with multiple fragments.
+        $final = (boolean) (ord($data[0]) & 1 << 7);
+
+        // Should be unused, and must be false…  // Bits 1, 2, & 3
+        $rsv1  = (boolean) (ord($data[0]) & 1 << 6);
+        $rsv2  = (boolean) (ord($data[0]) & 1 << 5);
+        $rsv3  = (boolean) (ord($data[0]) & 1 << 4);
+
+        // Parse opcode
+        $opcode_int = ord($data[0]) & 31; // Bits 4-7
+        $opcode_ints = array_flip(self::$opcodes);
+        if (!array_key_exists($opcode_int, $opcode_ints))
+            throw new ConnectionException("Bad opcode in websocket frame: $opcode_int");
+
+        $opcode = $opcode_ints[$opcode_int];
+        $this->last_opcode = $opcode;
+
+        // Masking?
+        $mask = (boolean) (ord($data[1]) >> 7);  // Bit 0 in byte 1
+
+        $payload = "";
+
+        // Payload length
+        $payload_length = (integer) ord($data[1]) & 127; // Bits 1-7 in byte 1
+        if ($payload_length > 125) {
+            if ($payload_length === 126) $data = $this->read(2); // 126: Payload is a 16-bit unsigned int
+            else                         $data = $this->read(8); // 127: Payload is a 64-bit unsigned int
+            $payload_length = bindec(self::sprintB($data));
+        }
+
+        // Get masking key.
+        if ($mask)
+            $masking_key = $this->read(4);
+
+        // Get the actual payload, if any (might not be for e.g. close frames.
+        if ($payload_length > 0)
+        {
+            $data = $this->read($payload_length);
+            if ($mask) {
+            // Unmask payload.
+            $payload = '';
+            for ($i = 0; $i < $payload_length; $i++) $payload .= ($data[$i] ^ $masking_key[$i % 4]);
+            }
+            else $payload = $data;
+        }
+
+        if ($opcode === 'close')
+        {
+            // Get the close status.
+            if ($payload_length >= 2) {
+            $status_bin = $payload[0] . $payload[1];
+            $status = bindec(sprintf("%08b%08b", ord($payload[0]), ord($payload[1])));
+            $this->close_status = $status;
+            $payload = substr($payload, 2);
+            }
+
+            if ($this->is_closing) $this->is_closing = false; // A close response, all done.
+            else $this->send($status_bin . 'Close acknowledged: ' . $status, 'close', true); // Respond.
+
+            // And close the socket.
+            fclose($this->socket);
+            $this->is_connected = false;
+        }
+
+        return $payload;
     }
-    // Just read the main fragment information first.
-    $data = $this->read(2);
-    //a non blocking stream always returns 2 blanck chars before feof is set to true
-    if($data==null)
-        return null;
-
-    $this->last_data_time=time();
-    // Is this the final fragment?  // Bit 0 in byte 0
-    /// @todo Handle huge payloads with multiple fragments.
-    $final = (boolean) (ord($data[0]) & 1 << 7);
-
-    // Should be unused, and must be false…  // Bits 1, 2, & 3
-    $rsv1  = (boolean) (ord($data[0]) & 1 << 6);
-    $rsv2  = (boolean) (ord($data[0]) & 1 << 5);
-    $rsv3  = (boolean) (ord($data[0]) & 1 << 4);
-
-    // Parse opcode
-    $opcode_int = ord($data[0]) & 31; // Bits 4-7
-    $opcode_ints = array_flip(self::$opcodes);
-    if (!array_key_exists($opcode_int, $opcode_ints)) {
-      throw new ConnectionException("Bad opcode in websocket frame: $opcode_int");
-    }
-    $opcode = $opcode_ints[$opcode_int];
-    $this->last_opcode = $opcode;
-
-    // Masking?
-    $mask = (boolean) (ord($data[1]) >> 7);  // Bit 0 in byte 1
-
-    $payload = "";
-    
-    // Payload length
-    $payload_length = (integer) ord($data[1]) & 127; // Bits 1-7 in byte 1
-    if ($payload_length > 125) {
-      if ($payload_length === 126) $data = $this->read(2); // 126: Payload is a 16-bit unsigned int
-      else                         $data = $this->read(8); // 127: Payload is a 64-bit unsigned int
-      $payload_length = bindec(self::sprintB($data));
-    }
-
-    // Get masking key.
-    if ($mask) $masking_key = $this->read(4);
-
-    // Get the actual payload, if any (might not be for e.g. close frames.
-    if ($payload_length > 0) {
-      $data = $this->read($payload_length);
-
-      if ($mask) {
-        // Unmask payload.
-        $payload = '';
-        for ($i = 0; $i < $payload_length; $i++) $payload .= ($data[$i] ^ $masking_key[$i % 4]);
-      }
-      else $payload = $data;
-    }
-
-    if ($opcode === 'close') {
-      // Get the close status.
-      if ($payload_length >= 2) {
-        $status_bin = $payload[0] . $payload[1];
-        $status = bindec(sprintf("%08b%08b", ord($payload[0]), ord($payload[1])));
-        $this->close_status = $status;
-        $payload = substr($payload, 2);
-      }
-
-      if ($this->is_closing) $this->is_closing = false; // A close response, all done.
-      else $this->send($status_bin . 'Close acknowledged: ' . $status, 'close', true); // Respond.
-
-      // And close the socket.
-      fclose($this->socket);
-      $this->is_connected = false;
-    }
-
-    return $payload;
-  }
 
   /**
    * Tell the socket to close.
@@ -223,32 +247,32 @@ class Base {
   }
 
     protected function read($length)
-{
-    $data = '';
-    while (strlen($data) < $length)
     {
-        $buffer = fread($this->socket, $length - strlen($data));
-        if ($buffer === false)
+        $data = '';
+        while (strlen($data) < $length)
         {
+            $buffer = fread($this->socket, $length - strlen($data));
+            if ($buffer === false)
+            {
             $metadata = stream_get_meta_data($this->socket);
             throw new ConnectionException
             (
-                'Broken frame, read ' . strlen($payload_data) . ' of stated '
-                . $payload_length . ' bytes.  Stream state: '
-                . json_encode($metadata)
+            'Broken frame, read ' . strlen($payload_data) . ' of stated '
+            . $payload_length . ' bytes.  Stream state: '
+            . json_encode($metadata)
             );
-        }
+            }
 
-        if ($buffer === '')
-        {
-            //two black chars are always returned when there is no more data to read.
-            return null;
+            //two blank chars are always returned when there is no more data to read, before feof is set to true
+            if ($length==2 && $buffer === '')
+            {
+                return null;
+            }
+            $data .= $buffer;
         }
+        return $data;
+    }
 
-    $data .= $buffer;
-}
-return $data;
-}
   /**
    * Helper to convert a binary to a string of '0' and '1'.
    */

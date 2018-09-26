@@ -78,6 +78,9 @@ See COPYING.
 
 Changelog
 ---------
+1.2.1
+	New fork.
+	Added ansync transfer option.
 
 1.2.0
 
