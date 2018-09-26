@@ -24,11 +24,17 @@ Installing
 Preferred way to install is with [Composer](https://getcomposer.org/).
 
 Just add
-
+```php
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/Trip69/websocket-php-async"
+        }
+    ],
     "require": {
-      "textalk/websocket": "1.0.*"
+      "textalk/websocket": "dev-master"
     }
-
+```
 in your projects composer.json.
 
 Client usage:
